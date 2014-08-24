@@ -1,0 +1,164 @@
+---
+title: "Practical Machine Learning Project"
+author: "Lori Ziegelmeier"
+date: "Sunday, August 24, 2014"
+output: pdf_document
+---
+
+### Introduction
+
+Data related to personal activity may now be readily collected using devices such as Jawbone Up, Nike FuelBand, and Fitbit.  Often, people are interested in quantifying how much of a particular activity they do.  However, quantifying how well they do a particular activity is quite important as well. 
+
+In this project, we consider quantifying how well 6 individuals perform dumbbell bicep curls.  These individuals were instructed to perform this activity in five different fashions (1 correct method and 4 incorrect):  exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D), and throwing the hips to the front (Class E).  Data from accelerometers located on the belt, forearm, arm, and dumbell were collected. This data may be found in the Weight Lifting Exercise Dataset http://groupware.les.inf.puc-rio.br/har [1].
+
+### Loading and Processing the Data
+
+First, we obtain the data from the links provided in the project description.  As the data takes a bit of time to download, we cache previously loaded data.
+
+```{r cache=TRUE}
+setwd("C:/Users/lziegel1/Documents/CourseraDataScience/R/")
+if(!file.exists("PMLTrainData.csv")){
+fileUrl1 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(fileUrl1,destfile="./PMLTrainData.csv")
+}
+if(!file.exists("PMLTestData.csv")){
+fileUrl2 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(fileUrl2,destfile="./PMLTestData.csv")
+}
+TrainData=read.csv("PMLTrainData.csv")
+TestData=read.csv("PMLTestData.csv")
+dtrain=dim(TrainData)
+dtest=dim(TestData)
+str(TrainData)
+```
+Notice that there are `r dtrain[1]` entries in the training data set with `r dtrain[2]` variables and only `r dtest[1]` entries in the testing data set.  The last variable in the test data is the *classe* response variable, and the last variable in the training data corresponds to the 20 test values.  Our goal is to use the remaining variables to predict an appropriate response for each entry.
+
+Note that several features appear to contain mostly NA values, no values at all, or are not relevant to the analysis (such as the user and time variables).  Thus, we select features to remove. 
+
+```{r cache=TRUE}
+
+#Replace missing values with NA
+TrainData[TrainData==""]=NA
+cs=colSums(is.na(TrainData)) 
+cs
+#Notice features either appear to be mostly NAs or contain no NAs
+
+#Remove columns with NA values
+TrainData=TrainData[,cs==0]
+TestData=TestData[,cs==0]
+
+#Remove the First 7 columns as seem irrelevant
+TrainData=TrainData[,8:60]
+TestData=TestData[,8:60]
+
+d=dim(TrainData)
+```
+
+After removing these features, there are now `r d[2]` variables on which to predict the response, classe, variable.
+
+### Model Fitting
+
+Now, we will split the original training into a testing and training data set with 60% of the data and 40%, respectively.  This will be used for cross validation of our model.
+
+```{r cache=TRUE}
+
+library(caret)
+set.seed(62433)
+##Partition training set into train/test
+inTrain = createDataPartition(TrainData$classe, p = .6)[[1]]
+training = TrainData[ inTrain,]
+testing = TrainData[-inTrain,]
+```
+
+We propose to fit our data to three different models using the methods of random forest, boosting, and using a stacked model of the two.  We first consider the two individual methods.
+
+```{r cache=TRUE}
+#Random Forest
+modfitRF <- train(classe~. , data = training , method = "rf")#,trControl=trainControl(method="cv",number=10))
+modfitRF
+
+#Boost
+modfitGBM <- train(classe~. , data = training, method = "gbm",verbose=FALSE)#,trControl=trainControl(method="cv",number=10) );
+modfitGBM
+
+```
+
+### Cross Validation
+
+Now, we predict using our model on the cross validation set, compute confusion matrices, and report the accuracy i.e. the out of sample error.
+```{r cache=TRUE}
+# Use the models to predict the test set
+predictRFtest <- predict(modfitRF, newdata = testing)
+predictGBMtest <- predict(modfitGBM, newdata = testing)
+
+#Plot of each model
+plot(modfitRF, main="Random Forest Model")
+plot(modfitGBM, main="Boosting Model")
+
+#Compute confusion matrices
+table(predictRFtest,testing$classe)
+table(predictGBMtest,testing$classe)
+
+# Compute accuracy of the 2 models on the test set
+RFAccuracy=table(predictRFtest == testing$classe)/length(testing$classe)
+GBMAccuracy=table(predictGBMtest == testing$classe)/length(testing$classe)
+```
+Notice that our accuracy for the random forest model is `r RFAccuracy[2]`!  The accuracy for the boosting model is not quite as good at `r GBMAccuracy[2]`.
+
+### Model Fitting Using a Stacked Model
+
+Next, we consider a stacked model of the two methods.  We build a data frame of the predicted training data using the two models, then fit our stacked model to this new data frame.
+
+```{r cache=TRUE}
+
+#Compute the predicted training for the stacked model
+predictRFtrain <- predict(modfitRF, newdata = training)
+predictGBMtrain <- predict(modfitGBM, newdata = training)
+
+# Use the predictions on the training set as 2 features for a stacked model
+predictionDataFrame <- data.frame(varRF = predictRFtrain, varGBM = predictGBMtrain, classe = training$classe)
+modfitStacked <- train(classe~., method = "rf", data = predictionDataFrame)
+```
+
+### Cross Validation on Stacked Model
+
+A similar testing data frame is built in order to perform cross validation on the stacked model.  We again compute the confusion matrix and the accuracy.
+
+```{r cache=TRUE}
+# Now build the test data frame containing the features for the testing set for the stacked model
+testingStacked <- data.frame(varRF = predictRFtest, varGBM= predictGBMtest, classe = testing$classe)
+dim(testingStacked)
+predictStacked <- predict(modfitStacked, newdata = testingStacked)
+# Get accuracy of stacked model on the test set
+
+#Display table
+table(predictStacked,testing$classe)
+
+#Accuracy
+StackedAccuracy=table(predictStacked == testing$classe)/length(testing$classe)
+```
+
+Notice that the accuracy for this stacked model is `r StackedAccuracy[2]`.  Since this accuracy is the same as the random forest model, we simply use the random forest model as it is a simpler model.
+
+### Applying Model to Test Cases
+
+Finally, we use our random forest model to predict the 20 test cases and display the answers as below.
+
+```{r cache=TRUE}
+FinalTest=predict(modfitRF,newdata=TestData)
+FinalTest
+Answers=as.character(FinalTest)
+```
+
+
+### Conclusion
+
+In this report, we have used three different models (random forest, boosting, and a stacked model of the two) to quantify dumbbell curls of six individuals.  We observe that all three methods perform quite well on our cross validation set, but choose the random forest model as the simplest model with highest accuracy. 
+
+
+### Bibliography
+
+[1] Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+
+
